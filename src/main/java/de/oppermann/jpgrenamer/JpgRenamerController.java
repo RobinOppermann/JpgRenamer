@@ -1,5 +1,6 @@
 package de.oppermann.jpgrenamer;
 
+import javafx.application.Platform;
 import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
 import javafx.fxml.FXML;
@@ -116,36 +117,45 @@ public class JpgRenamerController {
      * @param directory The directory to load
      */
     private void populateTable(File directory) {
-        this.fileList.clear();
-        List<File> jpgFiles = List.of();
-        try {
-            jpgFiles = Files.list(Path.of(directory.getAbsolutePath()))
-                    .filter(f -> Files.isRegularFile(f)
-                            && Arrays.stream(JpgFile.FILE_EXTENSIONS).anyMatch(e -> f.toString().toLowerCase(Locale.ROOT).endsWith(e)))
-                    .map(Path::toFile).toList();
-        } catch (Exception e) {
-            Alert alert = new Alert(Alert.AlertType.ERROR);
-            alert.setTitle("Opening directory failed");
-            alert.setHeaderText("Opening directory failed");
-            alert.setContentText(String.format("Opening the directory \"%s\" failed: %s", directory.getAbsolutePath(), e.getMessage()));
-            alert.showAndWait();
-        }
-        for (File file : jpgFiles) {
-            JpgFile jpgFile;
+        new Thread(() -> {
+            // loading the directory content might take some time -> run in new thread to avoid UI freeze
+            this.fileList.clear();
+            List<File> jpgFiles = List.of();
             try {
-                jpgFile = new JpgFile(file);
-                this.fileList.add(jpgFile);
-            } catch (IOException | ImageReadException | ParseException e) {
-                Alert alert = new Alert(Alert.AlertType.ERROR);
-                alert.setTitle("Image Error");
-                alert.setHeaderText("Could not open the image");
-                alert.setContentText(String.format("Could not open the image at \"%s\": %s", file.getAbsolutePath() , e.getMessage()));
-                alert.show();
+                jpgFiles = Files.list(Path.of(directory.getAbsolutePath()))
+                        .filter(f -> Files.isRegularFile(f)
+                                && Arrays.stream(JpgFile.FILE_EXTENSIONS).anyMatch(e -> f.toString().toLowerCase(Locale.ROOT).endsWith(e)))
+                        .map(Path::toFile).toList();
+            } catch (Exception e) {
+                Platform.runLater(() -> {
+                    Alert alert = new Alert(Alert.AlertType.ERROR);
+                    alert.setTitle("Opening directory failed");
+                    alert.setHeaderText("Opening directory failed");
+                    alert.setContentText(String.format("Opening the directory \"%s\" failed: %s", directory.getAbsolutePath(), e.getMessage()));
+                    alert.showAndWait();
+                });
             }
-        }
-        if(this.fileList.size() > 0) {
-            this.fileTable.getSelectionModel().select(0);
-        }
+            for (File file : jpgFiles) {
+                JpgFile jpgFile;
+                try {
+                    jpgFile = new JpgFile(file);
+                    this.fileList.add(jpgFile);
+                    Platform.runLater(() -> {
+                        if(this.fileTable.getItems().size() > 0) {
+                            this.fileTable.getSelectionModel().select(0);
+                        }
+                    });
+                } catch (IOException | ImageReadException | ParseException e) {
+                    Platform.runLater(() -> {
+                        Alert alert = new Alert(Alert.AlertType.ERROR);
+                        alert.setTitle("Image Error");
+                        alert.setHeaderText("Could not open the image");
+                        alert.setContentText(String.format("Could not open the image at \"%s\": %s", file.getAbsolutePath(), e.getMessage()));
+                        alert.show();
+                    });
+                }
+            }
+        }).start();
     }
 
     //region event handlers

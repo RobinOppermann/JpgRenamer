@@ -12,7 +12,9 @@ import org.apache.commons.imaging.formats.jpeg.JpegImageMetadata;
 import org.apache.commons.imaging.formats.tiff.TiffField;
 import org.apache.commons.imaging.formats.tiff.constants.TiffDirectoryType;
 import org.apache.commons.imaging.formats.tiff.constants.TiffTagConstants;
+import org.apache.commons.imaging.formats.tiff.taginfos.TagInfo;
 import org.apache.commons.imaging.formats.tiff.taginfos.TagInfoAscii;
+import org.apache.commons.imaging.formats.tiff.taginfos.TagInfoShort;
 
 import javax.imageio.ImageIO;
 import java.awt.*;
@@ -52,6 +54,8 @@ public class JpgFile {
 
     private static final String DATE_PATTERN = "yyyy-MM-dd HH-mm-ss";
 
+    private static final String EXIF_DATE_PATTERN = "yyyy:MM:dd HH:mm:ss";
+
     protected static final String[] FILE_EXTENSIONS = {".jpg", ".jpeg" };
 
     //endregion
@@ -77,21 +81,13 @@ public class JpgFile {
 
         this.setImageFile(imageFile);
         JpegImageMetadata metadata = readMetaData();
+        ImageInfo info = this.readImageInfo();
 
-        if(metadata != null) {
-            //read metadata successfully
-            this.taken = readDateTag(metadata);
-            this.width = readWidth(metadata);
-            this.height = readHeight(metadata);
-            this.thumbnail = getThumbnail(metadata);
-        } else {
-            //failed to read metadata -> try using imageinfo
-            ImageInfo info = this.readImageInfo();
-            this.taken = readFileDate();
-            this.width = readWidth(info);
-            this.height = readHeight(info);
-            this.thumbnail = getThumbnail(info);
-        }
+        //load metadata either from JpegMetadata or from ImageInfo
+        this.taken = readDate(metadata);
+        this.width = readWidth(metadata, info);
+        this.height = readHeight(metadata, info);
+        this.thumbnail = getThumbnail(metadata, info);
 
         //calculate suggested name from date taken
         SimpleDateFormat dateFormat = new SimpleDateFormat(DATE_PATTERN);
@@ -215,27 +211,54 @@ public class JpgFile {
     }
 
     /**
+     * Reads the date of the image. If no metadata is present or the metadata does not contain the date,
+     * the file creation date is used.
+     * @param metadata The image metadata, allowed to be null
+     * @return The creation date
+     * @throws IOException if the file cannot be accessed
+     */
+    private Date readDate(JpegImageMetadata metadata) throws IOException {
+        Date dateTaken = metadata != null? readDateFromTag(metadata) : null;
+        if(dateTaken == null) {
+            dateTaken = readFileDate();
+        }
+        return dateTaken;
+    }
+
+    /**
      * Reads the date from the Jpeg metadata. If the "DateTimeOriginal" tag is present,
      * it is used. Otherwise, the DateTime tag is used.
      * @param metadata The image metadata
      * @return The date parsed from the tag information
-     * @throws ImageReadException if the tag cannot be read
-     * @throws ParseException if the date format does not match the tag content
      */
-    private Date readDateTag(JpegImageMetadata metadata) throws ImageReadException, ParseException {
-        final String pattern = "yyyy:MM:dd HH:mm:ss";
+    private Date readDateFromTag(JpegImageMetadata metadata) {
+        Date dateTaken = readDateFromTag(metadata, new TagInfoAscii("DateTimeOriginal", 36867, 20, TiffDirectoryType.EXIF_DIRECTORY_EXIF_IFD));
+        if(dateTaken == null) {
+            dateTaken = readDateFromTag(metadata, TiffTagConstants.TIFF_TAG_DATE_TIME);
+        }
+        return dateTaken;
+    }
+
+    /**
+     * Reads the date from the specified tag of the given metadata
+     * @param metadata The image metadata
+     * @param tag The tag to read the date from
+     * @return The date, or null, if no date can be read from the tag
+     */
+    private Date readDateFromTag(JpegImageMetadata metadata, TagInfo tag) {
         try {
             //try reading the original date tag
-            TiffField field = metadata.findEXIFValue(
-                    new TagInfoAscii("DateTimeOriginal", 36867, 20, TiffDirectoryType.EXIF_DIRECTORY_EXIF_IFD));
-            SimpleDateFormat dateFormat = new SimpleDateFormat(pattern);
+            TiffField field = metadata.findEXIFValue(tag);
+            if(field == null) {
+                return null;
+            }
+            SimpleDateFormat dateFormat = new SimpleDateFormat(EXIF_DATE_PATTERN);
             return dateFormat.parse(field.getStringValue());
         } catch (ImageReadException | ParseException e) {
-            TiffField field = metadata.findEXIFValue(TiffTagConstants.TIFF_TAG_DATE_TIME);
-            SimpleDateFormat dateFormat = new SimpleDateFormat(pattern);
-            return dateFormat.parse(field.getStringValue());
+            return null;
         }
     }
+
 
     /**
      * Reads the date from the file attributes. This method is used as a fallback if no metadata
@@ -250,14 +273,38 @@ public class JpgFile {
     }
 
     /**
+     * Reads the height of the image. If no metadata is available, the image info is used.
+     * @param metadata The metadata of the image
+     * @param imageInfo The image info
+     * @return The height of the image (px), or -1 if no information is available
+     */
+    private int readHeight(JpegImageMetadata metadata, ImageInfo imageInfo) {
+        int height = metadata != null? readHeight(metadata): -1;
+        if(height == -1) {
+            height = readHeight(imageInfo);
+        }
+        return height;
+    }
+
+    /**
      * Reads the height of the image from the metadata
      * @param metadata The image metadata
      * @return The height (pixels)
-     * @throws ImageReadException if the tag cannot be read
      */
-    private int readHeight(JpegImageMetadata metadata) throws ImageReadException {
-        TiffField field = metadata.findEXIFValue(TiffTagConstants.TIFF_TAG_IMAGE_LENGTH);
-        return field.getIntValue();
+    private int readHeight(JpegImageMetadata metadata) {
+        try {
+            TiffField field = metadata.findEXIFValue(TiffTagConstants.TIFF_TAG_IMAGE_LENGTH);
+            if(field != null) {
+                return field.getIntValue();
+            }
+            field = metadata.findEXIFValue(new TagInfoShort("ExifImageLength", 40963, TiffDirectoryType.EXIF_DIRECTORY_EXIF_IFD));
+            if(field != null) {
+                return field.getIntValue();
+            }
+            return -1;
+        } catch (ImageReadException e) {
+            return -1;
+        }
     }
 
     /**
@@ -270,14 +317,38 @@ public class JpgFile {
     }
 
     /**
+     * Reads the width of the image. If no metadata is available, the image info is used.
+     * @param metadata The metadata of the image
+     * @param imageInfo The image info
+     * @return The width of the image (px), or -1 if no information is available
+     */
+    private int readWidth(JpegImageMetadata metadata, ImageInfo imageInfo) {
+        int width = metadata != null? readWidth(metadata): -1;
+        if(width == -1) {
+            width = readWidth(imageInfo);
+        }
+        return width;
+    }
+
+    /**
      * Reads the width of the image from the metadata
      * @param metadata The image metadata
      * @return The width (pixels)
-     * @throws ImageReadException if the tag cannot be read
      */
-    private int readWidth(JpegImageMetadata metadata) throws ImageReadException {
-        TiffField field = metadata.findEXIFValue(TiffTagConstants.TIFF_TAG_IMAGE_WIDTH);
-        return field.getIntValue();
+    private int readWidth(JpegImageMetadata metadata) {
+        try {
+            TiffField field = metadata.findEXIFValue(TiffTagConstants.TIFF_TAG_IMAGE_WIDTH);
+            if(field != null) {
+                return field.getIntValue();
+            }
+            field = metadata.findEXIFValue(new TagInfoShort("ExifImageWidth", 40962, TiffDirectoryType.EXIF_DIRECTORY_EXIF_IFD));
+            if(field != null) {
+                return field.getIntValue();
+            }
+            return -1;
+        } catch (ImageReadException e) {
+            return -1;
+        }
     }
 
     /**
@@ -290,23 +361,39 @@ public class JpgFile {
     }
 
     /**
+     * Reads the thumbnail of the image from the metadata.
+     * If no metadata thumbnail is available, the image is scaled and returned.
+     * @param metadata The image metadata
+     * @param imageInfo The image information
+     * @return A buffered image containing the thumbnail, or null, if no image data is available.
+     */
+    private BufferedImage getThumbnail(JpegImageMetadata metadata, ImageInfo imageInfo) {
+        BufferedImage thumbnail = metadata != null? getThumbnail(metadata) : null;
+        if(thumbnail == null) {
+            thumbnail = getThumbnail(imageInfo);
+        }
+        return thumbnail;
+    }
+
+    /**
      * Reads the thumbnail from the metadata
      * @param metadata The image metadata
      * @return The thumbnail
-     * @throws IOException if the file cannot be accessed
-     * @throws ImageReadException if the thumbnail cannot be read from the image
      */
-    private BufferedImage getThumbnail(JpegImageMetadata metadata) throws IOException, ImageReadException {
-        return metadata.getEXIFThumbnail();
+    private BufferedImage getThumbnail(JpegImageMetadata metadata){
+        try {
+            return metadata.getEXIFThumbnail();
+        } catch (ImageReadException | IOException e) {
+            return null;
+        }
     }
 
     /**
      * Creates a thumbnail from the image file by scaling it
      * @param imageInfo the image information
      * @return A scaled down version of the picture with a width of 150 px
-     * @throws IOException if the file cannot be accessed
      */
-    private BufferedImage getThumbnail(ImageInfo imageInfo) throws IOException {
+    private BufferedImage getThumbnail(ImageInfo imageInfo) {
         int width = 150;
         double factor = imageInfo.getWidth() / (double) width;
         int height = (int) (imageInfo.getHeight() / factor);
@@ -314,8 +401,12 @@ public class JpgFile {
         Image originalImage;
         try {
             originalImage = Imaging.getBufferedImage(this.imageFile);
-        } catch (ImageReadException e) {
-            originalImage = ImageIO.read(this.imageFile);
+        } catch (ImageReadException | IOException e) {
+            try {
+                originalImage = ImageIO.read(this.imageFile);
+            } catch (IOException ex) {
+                return null;
+            }
         }
         Image scaledImage = originalImage.getScaledInstance(width, height, BufferedImage.SCALE_SMOOTH);
         BufferedImage buffered = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
@@ -328,7 +419,7 @@ public class JpgFile {
 
     /**
      * Returns whether a file with the new name already exists.
-     * @return
+     * @return true if the file exists
      */
     protected boolean renamedFileExists() {
         return this.renamedImageFile.exists();
